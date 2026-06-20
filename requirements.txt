@@ -1,2 +1,4 @@
-feedparser
-requests
+feedparser==6.0.11
+requests==2.31.0
+defusedxml==0.7.1
+pyyaml==6.0.2
