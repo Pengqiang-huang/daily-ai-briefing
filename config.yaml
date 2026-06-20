@@ -1,0 +1,234 @@
+# Daily AI Briefing 配置文件
+# 所有阈值、数据源、关键词都在这里修改，无需改代码
+
+# arXiv 论文抓取
+arxiv:
+  max_results_per_query: 30        # 每个搜索词最多抓几篇
+  cutoff_days: 730                 # 只要近 N 天内的论文
+  eval_max_papers: 15              # 最多评几篇论文（省钱）
+  final_papers: 2                  # 最终推送几篇论文
+
+# 论文筛选阈值
+paper:
+  high_priority_min_score: 6       # 高优先级论文最低分
+  medium_priority_min_score: 4     # 中优先级论文最低分
+  batch_size: 5                    # 批量分析每批几篇
+
+# 新闻抓取
+news:
+  max_per_source: 15               # 每个源最多抓几条
+  eval_max_news: 30                # 最多评几条新闻
+  min_score: 6                     # 新闻最低分阈值
+  final_count: 3                   # 最终推送几条新闻
+  funding_keywords:                # 一票否决的融资关键词
+    - 融资
+    - 融了
+    - 数亿元
+    - 亿元融资
+    - 千万元
+    - 获投
+    - 完成融资
+    - 种子轮
+    - 天使轮
+    - A轮
+    - B轮
+    - C轮
+    - D轮
+    - Pre-IPO
+    - IPO
+    - 上市
+    - 估值
+    - funding
+    - raised
+    - series a
+    - series b
+    - series c
+    - seed round
+    - venture
+    - valuation
+    - went public
+
+# GitHub Trending
+github:
+  languages:                       # 抓哪些语言的 trending
+    - python
+    - cpp
+    - typescript
+    - rust
+  max_per_lang: 3                  # 每语言前几个
+  min_score: 5                     # GitHub 仓库最低分
+  final_count: 3                   # 最终推送几个
+
+# AI 新闻关键词初筛
+ai_keywords:
+  - AI
+  - LLM
+  - large language model
+  - GPT
+  - Claude
+  - Gemini
+  - agent
+  - agentic
+  - multimodal
+  - open source
+  - open-source
+  - NVIDIA
+  - GPU
+  - Jetson
+  - CUDA
+  - edge AI
+  - TensorRT
+  - ONNX
+  - quantization
+  - robot
+  - humanoid
+  - embodied AI
+  - autonomous
+  - autonomous driving
+  - Ollama
+  - Llama
+  - DeepSeek
+  - Qwen
+  - Mistral
+  - Gemma
+  - transformer
+  - diffusion model
+  - RAG
+  - embedding
+  - fine-tuning
+  - reasoning
+  - chain of thought
+  - cursor
+  - copilot
+  - claude code
+  - voice
+  - speech
+  - TTS
+  - ASR
+  - whisper
+  - computer vision
+  - image generation
+  - video generation
+  - sora
+  - veo
+  - midjourney
+  - figure
+  - optimus
+  - boston dynamics
+
+# 电机控制高优先级关键词
+motor_high_priority:
+  - FOC
+  - PMSM
+  - BLDC
+  - SMO
+  - sensorless control
+  - sliding mode observer
+  - field-oriented control
+  - motor control
+  - motor drive
+  - vector control
+  - model predictive control
+  - MPC
+  - neural network motor
+  - deep learning motor
+
+# 电机控制相关关键词
+motor_relevant:
+  - inverter
+  - PWM
+  - SVPWM
+  - torque control
+  - speed control
+  - current control
+  - rotor position
+  - adaptive control
+  - robust control
+  - backstepping
+  - observer
+  - estimation
+  - identification
+
+# 国外机构（用于论文优先级判断）
+foreign_institutions:
+  - mit
+  - stanford
+  - caltech
+  - cmu
+  - carnegie mellon
+  - berkeley
+  - uc berkeley
+  - cornell
+  - princeton
+  - harvard
+  - oxford
+  - cambridge
+  - eth zurich
+  - epfl
+  - imperial
+  - kth
+  - tu munich
+  - tum
+  - university of california
+  - university of michigan
+  - ucla
+  - purdue
+  - georgia tech
+  - tokyo
+  - kaist
+  - nus
+  - ntu
+  - samsung
+  - toyota
+  - honda
+  - bosch
+  - siemens
+  - abb
+  - schneider
+  - nvidia
+  - google
+  - meta
+  - apple
+  - microsoft
+  - wayve
+  - waymo
+  - tesla
+  - figure ai
+  - boston dynamics
+
+# 国内机构（排除用）
+chinese_institutions:
+  - tsinghua
+  - beihang
+  - zhejiang
+  - huazhong
+  - shanghai jiao
+  - xjtu
+  - xi'an jiaotong
+  - southeast
+  - ustc
+  - chinese academy of sciences
+  - peking
+  - fudan
+  - nanjing
+  - tongji
+  - beijing institute
+  - northwestern polytechnical
+  - national university of defense
+
+# 推送渠道
+push:
+  serverchan: true                 # 启用 Server 酱
+  email_fallback: false            # 邮件 fallback（未实现）
+
+# 缓存
+cache:
+  enabled: true
+  dir: paper_cache
+
+# 日志
+logging:
+  level: INFO                      # DEBUG / INFO / WARNING / ERROR
+  file: briefing.log               # 日志文件名
+  max_bytes: 5242880               # 单个日志文件最大 5MB
+  backup_count: 3                  # 保留几个旧日志
