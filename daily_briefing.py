@@ -168,12 +168,12 @@ def filter_by_keywords(papers, keywords, require_match=True):
     return matched
 
 
-# ============== DeepSeek 调用 ==============
+# ============== 阿里百炼 DeepSeek 调用 ==============
 def call_deepseek(prompt, max_tokens=2000):
-    """调用 DeepSeek API"""
-    url = 'https://api.deepseek.com/v1/chat/completions'
+    """调用阿里百炼的 DeepSeek 模型（OpenAI 兼容接口）"""
+    url = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions'
     data = {
-        'model': 'deepseek-chat',
+        'model': 'deepseek-v3',  # 阿里百炼上的 DeepSeek-V3 模型
         'messages': [
             {'role': 'user', 'content': prompt}
         ],
