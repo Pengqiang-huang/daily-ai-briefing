@@ -1,6 +1,7 @@
 import os
+import urllib.parse
+import urllib.request
 import feedparser
-import requests
 from datetime import datetime
 
 # 从 GitHub Secrets 读配置
@@ -30,15 +31,19 @@ def fetch_items():
     return items
 
 def push_to_wechat(title, content):
-    """通过 Server 酱推送到个人微信"""
-    url = f"https://sctapi.ftqq.com/{SERVERCHAN_SENDKEY}.send"
-    resp = requests.post(url, data={
-        "title": title,
-        "desp": content
-    })
-    return resp.json()
+    """通过 Server 酱推送到个人微信（GET 方式，最稳）"""
+    # 把标题和内容 URL 编码
+    encoded_title = urllib.parse.quote(title)
+    encoded_content = urllib.parse.quote(content)
+    url = f"https://sctapi.ftqq.com/{SERVERCHAN_SENDKEY}.send?title={encoded_title}&desp={encoded_content}"
+    
+    req = urllib.request.Request(url, method='GET')
+    with urllib.request.urlopen(req, timeout=30) as response:
+        result = response.read().decode('utf-8')
+    return result
 
 if __name__ == "__main__":
+    print(f"使用 SendKey: {SERVERCHAN_SENDKEY[:8]}...")
     print("📡 抓取 RSS...")
     items = fetch_items()
     print(f"  → 共 {len(items)} 条")
@@ -46,7 +51,6 @@ if __name__ == "__main__":
     today = datetime.now().strftime('%Y-%m-%d')
     title = f"每日 AI 简报 {today}"
     
-    # 用 Markdown 格式
     content = f"## 📰 每日 AI + 电机控制简报\n\n> {today}\n\n"
     
     for i, item in enumerate(items[:10], 1):
