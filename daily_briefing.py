@@ -105,24 +105,81 @@ AI_KEYWORDS = [
 ]
 
 
-# ============== arXiv 抓取 ==============
-def fetch_arxiv_papers(category, max_results=50):
-    """用 arXiv API 抓论文"""
-    query = f'cat:{category}'
-    url = f'{ARXIV_API}?search_query={query}&start=0&max_results={max_results}&sortBy=submittedDate&sortOrder=descending'
+# ============== arXiv 抓取（按领域关键词搜索）==============
+# 用 arXiv 搜索语法在标题/摘要里搜，比按分类精准 10 倍
+# 关键改进：每个搜索词都强制包含"MOTOR"或"PMSM"等核心词，避免假阳性
 
-    print(f'  抓取 {category} ...')
+# 搜索词组 1：核心电机控制（强制含 motor 关键词）
+ARXIV_QUERY_MOTOR_CORE = (
+    '(abs:"FOC" OR abs:"SMO" OR abs:"PMSM" OR abs:"BLDC" OR '
+    'abs:"field-oriented control" OR abs:"sliding mode observer" OR '
+    'abs:"sensorless control" OR abs:"brushless DC" OR '
+    'abs:"permanent magnet synchronous" OR abs:"permanent-magnet synchronous") '
+    'AND (abs:"motor" OR abs:"PMSM" OR abs:"BLDC" OR abs:"induction motor" OR '
+    'abs:"synchronous motor" OR abs:"stator" OR abs:"rotor")'
+)
+
+# 搜索词组 2：电机控制广义（强制含 motor）
+ARXIV_QUERY_MOTOR_BROAD = (
+    '(abs:"motor control" OR abs:"motor drive" OR abs:"motor drives" OR '
+    'abs:"PWM inverter" OR abs:"SVPWM" OR abs:"space vector modulation" OR '
+    'abs:"model predictive control" OR abs:"MTPA" OR '
+    'abs:"high frequency injection" OR abs:"torque ripple" OR '
+    'abs:"rotor position" OR abs:"speed control" OR abs:"speed regulation" OR '
+    'abs:"vector control" OR abs:"field weakening") '
+    'AND (abs:"motor" OR abs:"inverter" OR abs:"PMSM" OR abs:"BLDC")'
+)
+
+# 搜索词组 3：AI + 电机（强制含 motor + AI）
+ARXIV_QUERY_AI_CONTROL = (
+    '(abs:"neural network" OR abs:"deep learning" OR abs:"reinforcement learning" OR '
+    'abs:"LSTM" OR abs:"fuzzy" OR abs:"machine learning") '
+    'AND (abs:"motor" OR abs:"PMSM" OR abs:"BLDC" OR abs:"inverter")'
+)
+
+# 搜索词组 4：观测器 + 电机
+ARXIV_QUERY_OBSERVER = (
+    '(abs:"sliding mode" OR abs:"disturbance observer" OR '
+    'abs:"extended state observer" OR abs:"backstepping" OR '
+    'abs:"adaptive observer" OR abs:"Kalman filter" OR abs:"Luenberger") '
+    'AND (abs:"motor" OR abs:"PMSM" OR abs:"BLDC" OR abs:"induction")'
+)
+
+# 所有搜索任务
+ARXIV_SEARCH_QUERIES = [
+    ('motor_core', ARXIV_QUERY_MOTOR_CORE),
+    ('motor_broad', ARXIV_QUERY_MOTOR_BROAD),
+    ('ai_control', ARXIV_QUERY_AI_CONTROL),
+    ('observer', ARXIV_QUERY_OBSERVER),
+]
+
+
+def fetch_arxiv_by_search(query_name, query, max_results=30):
+    """用 arXiv API 搜索特定关键词的论文"""
+    from urllib.parse import quote
+    encoded_query = quote(query, safe=':()/')
+    url = (
+        f'{ARXIV_API}?search_query={encoded_query}'
+        f'&start=0&max_results={max_results}'
+        f'&sortBy=submittedDate&sortOrder=descending'
+    )
+    print(f'  搜索 [{query_name}]: {query[:60]}...')
+
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = resp.read().decode('utf-8')
     except Exception as e:
-        print(f'  抓 {category} 失败: {e}')
+        print(f'  搜索失败: {e}')
         return []
 
-    # 解析 arXiv API 的 XML（Atom 格式）
+    # 解析
     ns = {'atom': 'http://www.w3.org/2005/Atom', 'arxiv': 'http://arxiv.org/schemas/atom'}
-    root = ET.fromstring(data)
+    try:
+        root = ET.fromstring(data)
+    except Exception as e:
+        print(f'  解析失败: {e}')
+        return []
 
     papers = []
     for entry in root.findall('atom:entry', ns):
@@ -130,7 +187,6 @@ def fetch_arxiv_papers(category, max_results=50):
             title = entry.find('atom:title', ns).text.strip().replace('\n', ' ').replace('  ', ' ')
             summary = entry.find('atom:summary', ns).text.strip().replace('\n', ' ').replace('  ', ' ')
 
-            # 作者
             authors = []
             affiliations = []
             for author in entry.findall('atom:author', ns):
@@ -141,14 +197,10 @@ def fetch_arxiv_papers(category, max_results=50):
                 if aff is not None and aff.text:
                     affiliations.append(aff.text.strip())
 
-            # 链接
             link_el = entry.find('atom:id', ns)
             link = link_el.text.strip() if link_el is not None else ''
-
-            # arxiv id
             arxiv_id = link.split('/')[-1] if link else ''
 
-            # 发布时间
             published = entry.find('atom:published', ns).text.strip()
             pub_date = datetime.strptime(published, '%Y-%m-%dT%H:%M:%SZ')
 
@@ -160,27 +212,68 @@ def fetch_arxiv_papers(category, max_results=50):
                 'link': link,
                 'arxiv_id': arxiv_id,
                 'published': pub_date,
-                'category': category,
+                'category': query_name,  # 用搜索词名作为来源
+                'search_source': query_name,
             })
         except Exception as e:
-            print(f'  解析论文失败: {e}')
             continue
 
-    print(f'  → {len(papers)} 篇')
+    print(f'    → {len(papers)} 篇')
     return papers
 
 
 def fetch_all_arxiv():
-    """抓所有分类"""
+    """用多个关键词搜索拉取论文（精准）+ 1-2 年过滤"""
+    from datetime import datetime, timedelta
     all_papers = []
     seen_ids = set()
-    for cat in ARXIV_CATEGORIES:
-        papers = fetch_arxiv_papers(cat, max_results=50)
+    cutoff_date = datetime.utcnow() - timedelta(days=730)
+
+    # 多个搜索词并行拉取
+    for query_name, query in ARXIV_SEARCH_QUERIES:
+        papers = fetch_arxiv_by_search(query_name, query, max_results=30)
         for p in papers:
             if p['arxiv_id'] not in seen_ids:
-                seen_ids.add(p['arxiv_id'])
-                all_papers.append(p)
+                # 过滤：只保留 1-2 年内的
+                if p['published'].replace(tzinfo=None) >= cutoff_date:
+                    seen_ids.add(p['arxiv_id'])
+                    all_papers.append(p)
+    print(f'  时间过滤后（近 2 年内）: {len(all_papers)} 篇')
     return all_papers
+
+
+# ============== 国外机构判断 ==============
+TOP_FOREIGN_INSTITUTIONS = [
+    'mit', 'stanford', 'caltech', 'cmu', 'carnegie mellon', 'berkeley',
+    'uc berkeley', 'cornell', 'princeton', 'harvard', 'oxford', 'cambridge',
+    'eth zurich', 'epfl', 'imperial', 'kth', 'tu munich', 'tum',
+    'university of california', 'university of michigan', 'ucla',
+    'university of texas', 'purdue', 'georgia tech', 'university of illinois',
+    'tokyo', 'kyoto', 'seoul national', 'kaist', 'nus', 'ntu',
+    'samsung', 'toyota', 'honda', 'bosch', 'siemens', 'abb', 'schneider',
+    'toyota research', 'nvidia', 'google', 'meta', 'apple', 'microsoft',
+    'wayve', 'waymo', 'tesla', 'figure ai', 'boston dynamics',
+    'ieee fellow', 'fellow, ieee', 'ieee transactions',
+]
+
+
+def is_foreign_institution(paper):
+    """判断是否国外机构（基于 affiliations 文本）"""
+    affs_text = ' '.join(paper.get('affiliations', [])).lower()
+    # 排除明显的国内大学
+    cn_keywords = ['tsinghua', 'beihang', 'zhejiang', 'huazhong', 'hit ',
+                   'shanghai jiao', 'xjtu', 'xi\'an jiaotong', 'southeast',
+                   'university of science and technology of china', 'ustc',
+                   'chinese academy of sciences', 'cas ', 'peking', 'fudan',
+                   'nanjing', 'tongji', 'wuhan', 'sichuan', 'chongqing',
+                   'tianjin', 'hunan', 'shandong', 'beijing institute',
+                   'northwestern polytechnical', 'national university of defense',
+                   '中国', '大学', '研究院']
+    has_cn = any(kw in affs_text for kw in cn_keywords)
+    if has_cn:
+        return False
+    has_foreign = any(kw in affs_text for kw in TOP_FOREIGN_INSTITUTIONS)
+    return has_foreign
 
 
 # ============== 关键词初筛 ==============
@@ -361,6 +454,20 @@ def generate_paper_summary(paper, paper_type):
 
 def evaluate_news(title, summary):
     """评估新闻价值（严格过滤融资 + 必须跟电机控制相关）"""
+    # 硬规则一票否决：标题/摘要里出现融资关键词
+    funding_keywords = [
+        '融资', '融了', '数亿元', '亿元融资', '千万元', '获投', '完成融资',
+        '种子轮', '天使轮', 'A 轮', 'A轮', 'B 轮', 'B轮', 'C 轮', 'C轮',
+        'D 轮', 'D轮', 'Pre-IPO', 'IPO', '上市', '估值',
+        'funding', 'raised', 'series a', 'series b', 'series c',
+        'seed round', 'venture', 'valuation', 'went public', 'acquired for',
+        '收购金额', '投资金额', '领投', '跟投', '押注',
+    ]
+    text = (title + ' ' + summary).lower()
+    for kw in funding_keywords:
+        if kw.lower() in text:
+            return 0, f'融资/估值类（关键词：{kw}）'
+
     prompt = f"""这是一个给"电机控制方向研究生（控制科学与工程专业）"的 AI 简报。判断这条新闻值不值得推送。
 
 标题：{title}
@@ -504,9 +611,49 @@ def generate_news_summary(news_item):
     }
 
 
+def generate_github_summary(repo):
+    """生成 GitHub 仓库的中文介绍"""
+    prompt = f"""请把下面这个 GitHub 仓库改写为"对电机控制研究生有用"的中文介绍。
+
+【仓库名】
+{repo['title']}
+
+【仓库描述（英文）】
+{repo['summary']}
+
+【要求】
+1. 中文介绍（80-120 字）
+   - 用白话讲清楚这个仓库是干什么的
+   - 解决什么问题
+   - 用了什么技术
+   - 第一次出现的专有名词加括号解释
+
+2. "对你价值"（30-50 字）
+   - 跟电机控制/机器人/AI 学习的关联
+   - 能不能用到研究/工作
+
+严格按 JSON 输出：
+{{
+  "summary_zh": "中文介绍（80-120 字）",
+  "value_zh": "对你价值（30-50 字）"
+}}
+"""
+    result = call_deepseek(prompt, max_tokens=400)
+    try:
+        match = re.search(r'\{[\s\S]+\}', result)
+        if match:
+            return json.loads(match.group(0))
+    except Exception as e:
+        print(f'  解析 GitHub 摘要失败: {e}')
+    return {
+        'summary_zh': repo.get('summary', '')[:200],
+        'value_zh': '暂未分析'
+    }
+
+
 # ============== 新闻抓取 ==============
 def fetch_github_trending():
-    """抓 GitHub Trending"""
+    """抓 GitHub Trending（每个 repo 独立解析）"""
     trending = []
     for lang in GITHUB_TRENDING_LANGS:
         try:
@@ -515,40 +662,59 @@ def fetch_github_trending():
             with urllib.request.urlopen(req, timeout=20) as resp:
                 html = resp.read().decode('utf-8')
 
-            # 简单解析 HTML（用正则）
-            # 仓库名格式：<h2 class="h3 lh-condensed">...<a href="/owner/repo">
-            pattern = r'<h2[^>]*class="h3[^"]*"[^>]*>.*?<a[^>]*href="/([^"]+)"[^>]*>(.*?)</a>'
-            matches = re.findall(pattern, html, re.DOTALL)
+            # 找到每个 <article> 块，每个仓库一个
+            # 格式：<article class="Box-row">...</article>
+            article_pattern = r'<article[^>]*class="Box-row"[^>]*>(.*?)</article>'
+            articles = re.findall(article_pattern, html, re.DOTALL)
 
-            for repo_path, repo_name_html in matches[:3]:  # 每语言前 3
-                # 清理 HTML
-                repo_name = re.sub(r'<[^>]+>', '', repo_name_html).strip()
-                repo_name = re.sub(r'\s+', ' ', repo_name)
+            print(f'  GitHub Trending ({lang}): 找到 {len(articles)} 个仓库')
 
-                # 找描述
-                desc_pattern = r'<p class="col-9[^"]*[^>]*>(.*?)</p>'
-                desc_match = re.search(desc_pattern, html, re.DOTALL)
+            for article in articles[:3]:  # 每语言前 3
+                # 提取仓库路径
+                path_match = re.search(r'<h2[^>]*>.*?<a[^>]*href="/([^"]+)"', article, re.DOTALL)
+                if not path_match:
+                    continue
+                repo_path = path_match.group(1).strip()
+
+                # 提取仓库名（owner/repo）
+                name_match = re.search(
+                    r'<h2[^>]*>.*?<a[^>]*href="/' + re.escape(repo_path) + r'"[^>]*>(.*?)</a>',
+                    article, re.DOTALL
+                )
+                repo_name = ''
+                if name_match:
+                    repo_name = re.sub(r'<[^>]+>', '', name_match.group(1)).strip()
+                    repo_name = re.sub(r'\s+', ' ', repo_name)
+                else:
+                    repo_name = repo_path
+
+                # 提取描述（每个 article 内独立搜）
+                desc_match = re.search(r'<p[^>]*class="col-9[^"]*"[^>]*>(.*?)</p>', article, re.DOTALL)
                 desc = ''
                 if desc_match:
                     desc = re.sub(r'<[^>]+>', '', desc_match.group(1)).strip()
+                    desc = re.sub(r'\s+', ' ', desc)
 
-                # 找 stars
-                star_pattern = r'<a[^>]*href="/' + re.escape(repo_path) + r'/stargazers"[^>]*>.*?>([\d,]+)</a>'
-                star_match = re.search(star_pattern, html, re.DOTALL)
+                # 提取 stars（用该 repo 的 stargazers 链接）
+                star_match = re.search(
+                    r'href="/' + re.escape(repo_path) + r'/stargazers"[^>]*>.*?>([\d,]+)<',
+                    article, re.DOTALL
+                )
                 stars = star_match.group(1) if star_match else '?'
 
                 trending.append({
                     'source': f'GitHub Trending ({lang})',
                     'title': f'⭐ {stars} {repo_name}',
-                    'summary': desc[:300] if desc else f'一个 {lang} 项目，最近获得关注',
+                    'summary': desc[:400] if desc else f'一个 {lang} 项目，最近获得关注',
                     'link': f'https://github.com/{repo_path}',
                     'language': lang,
                     'repo_path': repo_path,
                 })
+
         except Exception as e:
             print(f'  GitHub Trending ({lang}) 抓取失败: {e}')
 
-    print(f'  → GitHub Trending: {len(trending)} 个仓库')
+    print(f'  → GitHub Trending 总计: {len(trending)} 个仓库')
     return trending
 
 
@@ -633,20 +799,34 @@ def main():
             paper_scores.append((5.0, p, '兜底（未评分）'))
 
     # 选 1 篇 AI+电机（来自 cs.AI）+ 1 篇纯电机（cs.SY/cs.RO）
+    # 优先选国外机构的论文
     ai_motor_paper = None
     pure_motor_paper = None
 
-    # 优先从 cs.AI 中选 AI+电机（按分数排过的）
+    # 第一优先：cs.AI 分类的国外机构
     for score, p, reason in paper_scores:
-        if p['category'] == 'cs.AI' and not ai_motor_paper:
+        if p['category'] == 'cs.AI' and not ai_motor_paper and is_foreign_institution(p):
             ai_motor_paper = (score, p, reason)
             break
 
-    # 再从 cs.SY/cs.RO 中选纯电机
+    # 第一优先：cs.SY/cs.RO 分类的国外机构
     for score, p, reason in paper_scores:
-        if p['category'] in ('cs.SY', 'cs.RO') and not pure_motor_paper:
+        if p['category'] in ('cs.SY', 'cs.RO') and not pure_motor_paper and is_foreign_institution(p):
             pure_motor_paper = (score, p, reason)
             break
+
+    # 第二优先：放宽到任何机构（如果第一优先没找到）
+    if not ai_motor_paper:
+        for score, p, reason in paper_scores:
+            if p['category'] == 'cs.AI':
+                ai_motor_paper = (score, p, reason)
+                break
+
+    if not pure_motor_paper:
+        for score, p, reason in paper_scores:
+            if p['category'] in ('cs.SY', 'cs.RO'):
+                pure_motor_paper = (score, p, reason)
+                break
 
     # 兜底机制：保证有 2 篇
     if not ai_motor_paper and not pure_motor_paper and len(paper_scores) >= 2:
@@ -776,12 +956,15 @@ def main():
             final_content += '─' * 30 + '\n'
             final_content += '【💻 GitHub 热门项目（对你有用）】\n\n'
             for i, (score, repo, reason) in enumerate(top_gh, 1):
+                # 生成 GitHub 中文介绍
+                print(f'  生成 GitHub 中文介绍 {i}/3...')
+                gh_data = generate_github_summary(repo)
                 final_content += f'**{i}. [{score:.1f}/10] {repo["title"]}**\n'
                 final_content += f'   📍 {repo["source"]}\n'
                 if reason:
                     final_content += f'   💡 {reason}\n'
-                if repo['summary']:
-                    final_content += f'   📝 {repo["summary"][:200]}\n'
+                final_content += f'   📝 {gh_data.get("summary_zh", repo.get("summary", ""))[:300]}\n'
+                final_content += f'   🎯 对你价值：{gh_data.get("value_zh", "")}\n'
                 if repo.get('link'):
                     final_content += f'   🔗 [查看仓库]({repo["link"]})\n'
                 final_content += '\n'
