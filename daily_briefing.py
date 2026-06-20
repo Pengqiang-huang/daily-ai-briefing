@@ -29,33 +29,56 @@ ARXIV_CATEGORIES = {
 # arXiv API（免费，无需 key）
 ARXIV_API = 'http://export.arxiv.org/api/query'
 
-# AI 新闻源
+# AI + 科技圈新闻源
 NEWS_FEEDS = [
+    # AI 垂直
     ('Hacker News 最佳', 'https://hnrss.org/best?count=30'),
     ('量子位', 'https://www.qbitai.com/feed'),
     ('机器之心', 'https://www.jiqizhixin.com/rss'),
+    # 科技圈
+    ('36氪', 'https://36kr.com/feed'),
+    ('极客公园', 'https://www.geekpark.net/rss'),
+    ('智东西', 'https://zhidx.com/feed'),
 ]
 
-# 电机控制关键词
+# 电机控制关键词（更严格，要求直接相关）
 MOTOR_KEYWORDS = [
+    # 核心控制算法
     'FOC', 'field-oriented', 'field oriented', 'vector control',
-    'SMO', 'sliding mode observer', 'sliding-mode',
-    'PMSM', 'permanent magnet synchronous', 'permanent-magnet',
+    'SMO', 'sliding mode observer', 'sliding-mode observer',
+    'sensorless control', 'sensorless drive', 'sensorless PMSM',
+    'PMSM', 'permanent magnet synchronous', 'permanent-magnet synchronous',
     'BLDC', 'brushless DC', 'brushless direct',
-    'motor control', 'motor drive', 'motor drives',
+    # 电机控制基础
+    'motor control', 'motor drive', 'motor drives', 'motor speed',
     'sensorless', 'sensor-less', 'position sensorless',
-    'PWM', 'SVPWM', 'space vector',
-    'inverter', 'MPPT', 'torque ripple',
+    'PWM', 'SVPWM', 'space vector modulation', 'space vector pulse width',
+    'inverter', 'voltage source inverter', 'current control',
+    'MPPT', 'torque ripple', 'torque control',
     'rotor position', 'speed regulation', 'speed control',
-    'MTPA', 'field weakening',
-    'high frequency injection', 'HF injection',
-    'observer-based', 'disturbance observer',
-    'adaptive control', 'robust control',
-    'neural network motor', 'deep learning motor',
-    'reinforcement learning motor', 'MPC motor',
-    'fault diagnosis motor', 'motor fault',
-    'IGBT', 'SiC', 'GaN',
+    'MTPA', 'field weakening', 'field oriented',
+    'high frequency injection', 'HF injection', 'pulsating HF',
+    'rotor speed', 'rotor angle', 'back-EMF', 'back EMF',
+    # 观测器和控制理论
+    'sliding mode control', 'terminal sliding mode', 'super-twisting',
+    'adaptive sliding', 'extended sliding mode',
+    'disturbance observer', 'extended state observer', 'ESO',
+    'model predictive control', 'MPC', 'finite control set',
+    'adaptive control', 'robust control', 'backstepping',
+    # AI 应用于电机
+    'neural network motor', 'neural network PMSM', 'neural network SMO',
+    'deep learning motor', 'deep learning PMSM', 'deep learning SMO',
+    'reinforcement learning motor', 'RL motor control',
+    'LSTM motor', 'LSTM PMSM', 'LSTM SMO',
+    'fuzzy control motor', 'fuzzy logic motor', 'fuzzy PID',
+    'fault diagnosis motor', 'motor fault', 'PMSM fault',
+    'IGBT', 'SiC inverter', 'GaN inverter', 'three-level inverter',
+    # 电机相关术语
+    'stator', 'rotor', 'winding', 'reluctance', 'salient pole',
+    'synchronous motor', 'asynchronous motor', 'induction motor',
     'PMSM drive', 'PMSM control', 'motor estimation',
+    'd-q axis', 'dq-axis', 'alpha-beta', 'clarke transformation', 'park transformation',
+    'current loop', 'speed loop', 'cascaded control',
 ]
 
 # AI 过滤关键词
@@ -211,7 +234,7 @@ def evaluate_paper(paper):
     venue_match = re.search(r'(Accepted to|Accepted at|To appear in|published in)\s+([A-Z][A-Za-z\.\s]+)', paper['summary'])
     venue = venue_match.group(0) if venue_match else '未提及'
 
-    prompt = f"""你是电机控制领域 + AI 论文质量审查专家。综合评估这篇论文。
+    prompt = f"""你是电机控制领域 + AI 论文质量审查专家。**严格**评估这篇论文是否跟【电机控制/FOC/SMO/PMSM】直接相关。
 
 【论文信息】
 标题：{paper['title']}
@@ -225,31 +248,43 @@ GitHub 代码：{'有' if has_github else '无'}
 摘要：
 {paper['summary'][:1500]}
 
+【关键问题】（必须明确回答）
+这篇论文是不是**直接**研究以下之一：
+- FOC（磁场定向控制）/ 矢量控制
+- SMO（滑模观测器）/ 无位置传感器控制
+- PMSM（永磁同步电机）/ BLDC / 异步电机 的控制/驱动
+- AI/深度学习/神经网络 应用于电机控制
+- 模型预测控制（MPC）应用于电机
+- 电机故障诊断、参数辨识
+
+如果只是用到了"状态估计"、"观测器"但跟电机无关（如 SLAM、UWB 定位、机器人感知），**不相关**！
+
 【评分维度】（每项 0-10）
 
-1. 相关性（30%）
-   - 跟 FOC/SMO/PMSM/无感控制/电机驱动 的契合度
-   - 是否 AI+电机控制的结合
+1. **直接相关性**（50%）⭐⭐⭐ 最重要
+   - 完全不相关（如 SLAM、UWB、机器人感知用状态估计）= 0-2 分
+   - 间接相关（如通用控制理论、通用机器学习）= 3-5 分
+   - 直接相关（明确研究 FOC/SMO/PMSM 控制）= 7-10 分
 
-2. 质量信号（30%）
+2. 质量信号（25%）
    - 作者机构：顶校/顶企业（清华、北航、浙大、华科、哈工大、IEEE Fellow 所在组、MIT/Stanford/CMU/Caltech、ABB/西门子/施耐德）= 高分
    - 有 GitHub 代码 = +2
-   - 有明确实验验证 = +1
+   - 有明确实验验证（电机实验台数据）= +1
    - 被接收会议/期刊（IEEE Trans、ACC、CDC、IFAC）= +2
    - 摘要详实（不是 1-2 句水摘要）= +1
 
-3. 可实现性（20%）
+3. 可实现性（15%）
    - 电机控制研究生能否复现
    - 是否依赖稀缺硬件
 
-4. 新颖性（20%）
+4. 新颖性（10%）
    - 方法是否新颖，不是简单套用神经网络
 
 【可信度红旗】
 - 摘要只有 1-2 句明显 AI 生成 → -3
 - 作者机构全是野鸡大学 → -2
 - 无任何实验/数据 → -2
-- 标题党（标题很炸但内容空洞）→ -2
+- 标题党 → -2
 
 严格按 JSON 输出（不要其他文字）：
 {{"score": 8.5, "reasons": "评分理由（中文，30 字内）"}}
@@ -268,23 +303,46 @@ GitHub 代码：{'有' if has_github else '无'}
 
 
 def generate_paper_summary(paper, paper_type):
-    """DeepSeek 生成中英文摘要"""
-    prompt = f"""你是一个电机控制领域专家。这是一篇{paper_type}论文，请输出格式化的内容。
+    """DeepSeek 生成科普级中文摘要"""
+    prompt = f"""你是一个帮助"普通电机控制研究生"理解论文的专家。请把论文摘要改写为"科普级"中文摘要。
 
-【英文标题】
-{paper['title']}
+【硬性规则】
 
-【英文摘要】
-{paper['summary']}
+1. **不要直接搬英文术语和函数名**
+   - 第一次出现的专有名词，必须**括号内加一句通俗解释**
+   - 例如："M-estimation（一种能过滤异常值的统计方法）"
+   - 例如："IRLS 迭代重加权（多次调整数据权重的拟合算法）"
+
+2. **白话优先**
+   - "本文提出" → "研究者提出了" 或 "科学家尝试了"
+   - "实验证明" → "实际测试发现"
+   - 避免堆砌"新颖"、"优越"、"显著"等空话
+
+3. **4 段结构**（每段 30-50 字）
+   - 段 1【研究背景】：为什么要做这件事？解决什么实际问题/痛点？
+   - 段 2【之前方法的不足】：传统方法有什么局限？
+   - 段 3【本文做了什么】：核心思路是什么（用白话讲清楚）
+   - 段 4【效果如何】：实测/仿真结果怎样
+
+4. **关键要点**用 3 句话总结，每句用白话
+
+5. **避免**：
+   - 直接翻译英文摘要
+   - 堆专业术语不解释
+   - 重复"本文"开头
+
+【论文信息】
+英文标题：{paper['title']}
+英文摘要：{paper['summary']}
 
 请严格按以下 JSON 输出（不要其他文字）：
 {{
   "title_zh": "中文标题（20 字内）",
-  "summary_zh": "中文摘要（100-150 字，技术细节要准确）",
-  "key_points": ["要点1", "要点2", "要点3"]
+  "summary_zh": "科普级中文摘要（150-200 字，4 段结构）",
+  "key_points": ["白话要点1", "白话要点2", "白话要点3"]
 }}
 """
-    result = call_deepseek(prompt, max_tokens=600)
+    result = call_deepseek(prompt, max_tokens=800)
     try:
         match = re.search(r'\{[\s\S]+\}', result)
         if match:
@@ -299,25 +357,31 @@ def generate_paper_summary(paper, paper_type):
 
 
 def evaluate_news(title, summary):
-    """评估新闻价值"""
-    prompt = f"""这是一个给"电机控制方向研究生 + 关注 AI 行业"的 AI 简报。判断这条新闻值不值得推送。
+    """评估新闻价值（科技圈 + AI）"""
+    prompt = f"""这是一个给"电机控制方向研究生 + 关注科技圈"的 AI 简报。判断这条新闻值不值得推送。
 
 标题：{title}
 摘要：{summary[:500]}
 
-值得推送（7-10 分）：
-- AI 工具/技术更新，能直接提升学习或工作效率（如新开源模型、新框架）
-- 机器人/嵌入式 AI 领域新进展（Figure、Optimus、Jetson 新硬件）
-- 新的开源大模型/Agent 框架
-- 行业重大技术突破
+值得推送（5-10 分）：
+- AI 技术/工具更新（开源模型、AI Agent、新框架）
+- 机器人/嵌入式 AI/具身智能 新进展
+- 硬件突破（Jetson、新芯片、嵌入式开发板）
+- 科技公司重大技术发布
+- 改变行业的新产品/新范式
 
 不值得推送（0-3 分）：
 - 公司融资/估值/上市/IPO
 - 创始人故事/八卦
-- 政策/法规/合规
+- 政策/法规
 - 营销软文/带货
-- 已经是烂大街概念（"AI 取代人工"、"AI 改变世界"）
-- 跟电机控制/AI 工具完全无关
+- 烂大街概念（"AI 取代人工"）
+- 完全不相关的（如娱乐圈、社会新闻）
+
+【特别注意】
+- 如果是 AI/机器人/嵌入式/新能源/芯片 相关 → 加分
+- 如果是 36氪/极客公园/智东西 的科技内容 → 多给分
+- 如果是 量子位/机器之心 的 AI 硬核技术 → 优先
 
 严格按 JSON 输出：
 {{"score": 8.0, "reason": "一句话理由（中文，20 字内）"}}
@@ -408,25 +472,36 @@ def main():
 
     paper_scores.sort(key=lambda x: -x[0])
 
-    # 选 1 篇 AI+电机（来自 cs.AI 分类）+ 1 篇纯电机（来自 cs.SY/cs.RO）
+    # 选 1 篇 AI+电机（来自 cs.AI）+ 1 篇纯电机（cs.SY/cs.RO）
     ai_motor_paper = None
     pure_motor_paper = None
 
+    # 优先从 cs.AI 中选 AI+电机
     for score, p, reason in paper_scores:
-        if not ai_motor_paper and p['category'] == 'cs.AI':
+        if p['category'] == 'cs.AI' and not ai_motor_paper:
             ai_motor_paper = (score, p, reason)
-        elif not pure_motor_paper and p['category'] in ('cs.SY', 'cs.RO'):
-            pure_motor_paper = (score, p, reason)
-        if ai_motor_paper and pure_motor_paper:
             break
 
-    # 兜底：分类里没合适的就从 Top 里取
-    if not ai_motor_paper and paper_scores:
+    # 再从 cs.SY/cs.RO 中选纯电机
+    for score, p, reason in paper_scores:
+        if p['category'] in ('cs.SY', 'cs.RO') and not pure_motor_paper:
+            pure_motor_paper = (score, p, reason)
+            break
+
+    # 兜底机制：保证有 2 篇
+    if not ai_motor_paper and not pure_motor_paper and len(paper_scores) >= 2:
         ai_motor_paper = paper_scores[0]
-    if not pure_motor_paper and len(paper_scores) > 1:
         pure_motor_paper = paper_scores[1]
-    elif not pure_motor_paper and paper_scores:
-        pure_motor_paper = paper_scores[0]
+    elif not ai_motor_paper and paper_scores:
+        ai_motor_paper = paper_scores[0]
+    elif not pure_motor_paper and len(paper_scores) >= 2:
+        pure_motor_paper = paper_scores[1] if paper_scores[0] == ai_motor_paper else paper_scores[0]
+
+    print(f'  选中: AI+电机={ai_motor_paper is not None}, 纯电机={pure_motor_paper is not None}')
+    if ai_motor_paper:
+        print(f'    AI+电机: {ai_motor_paper[1]["title"][:50]} (cat={ai_motor_paper[1]["category"]}, score={ai_motor_paper[0]})')
+    if pure_motor_paper:
+        print(f'    纯电机: {pure_motor_paper[1]["title"][:50]} (cat={pure_motor_paper[1]["category"]}, score={pure_motor_paper[0]})')
 
     # ====== 2. 生成论文简报 ======
     print('\n[4/5] 生成论文摘要...')
@@ -440,7 +515,7 @@ def main():
         final_content += f'【🔬 论文 1/2】AI + 电机控制 [{score:.1f}/10]\n\n'
         final_content += f'**Title (EN)**: {p["title"]}\n\n'
         final_content += f'**中文标题**: {summary_data.get("title_zh", "")}\n\n'
-        final_content += f'📝 **中文摘要**：\n{summary_data.get("summary_zh", "")}\n\n'
+        final_content += f'📝 **中文摘要（白话版）**：\n{summary_data.get("summary_zh", "")}\n\n'
         if summary_data.get('key_points'):
             final_content += '**核心要点**：\n'
             for kp in summary_data['key_points']:
@@ -457,7 +532,7 @@ def main():
         final_content += f'【⚙️ 论文 2/2】电机控制 [{score:.1f}/10]\n\n'
         final_content += f'**Title (EN)**: {p["title"]}\n\n'
         final_content += f'**中文标题**: {summary_data.get("title_zh", "")}\n\n'
-        final_content += f'📝 **中文摘要**：\n{summary_data.get("summary_zh", "")}\n\n'
+        final_content += f'📝 **中文摘要（白话版）**：\n{summary_data.get("summary_zh", "")}\n\n'
         if summary_data.get('key_points'):
             final_content += '**核心要点**：\n'
             for kp in summary_data['key_points']:
@@ -474,20 +549,26 @@ def main():
 
     # 评分
     news_scores = []
-    news_eval_count = min(20, len(ai_news))  # 限制新闻评分篇数，省钱
+    news_eval_count = min(30, len(ai_news))  # 多评一些，从里面选
     for i, n in enumerate(ai_news[:news_eval_count]):
         if i % 5 == 0:
             print(f'  新闻评分 {i}/{news_eval_count}...')
         score, reason = evaluate_news(n['title'], n['summary'])
-        if score >= 7:
+        if score >= 5:  # 阈值降到 5，确保能选 3 条
             news_scores.append((score, n, reason))
 
     news_scores.sort(key=lambda x: -x[0])
     top_news = news_scores[:3]  # 取 3 条
 
+    if not top_news:
+        # 兜底：取任何 ai_news 中的前 3 条
+        print('  ⚠️ 没有高分新闻，兜底取前 3 条')
+        for n in ai_news[:3]:
+            top_news.append((5.0, n, '兜底推荐'))
+
     if top_news:
         final_content += '─' * 30 + '\n'
-        final_content += '【🆕 AI 圈新动态】\n\n'
+        final_content += '【🆕 科技圈新动态】\n\n'
         for i, (score, n, reason) in enumerate(top_news, 1):
             final_content += f'**{i}. [{score:.1f}/10] {n["title"]}**\n'
             final_content += f'   📍 来源：{n["source"]}\n'
