@@ -32,18 +32,30 @@ import feedparser
 import xml.etree.ElementTree as ET
 
 
-def _http_request(url, data=None, headers=None, timeout=30, retries=3):
-    """带重试的 HTTP 请求（指数退避）"""
+def _http_request(url, data=None, headers=None, timeout=60, retries=3):
+    """带重试的 HTTP 请求（指数退避，尊重 429 Retry-After）"""
     last_err = None
     for attempt in range(retries):
         try:
             req = urllib.request.Request(url, data=data, headers=headers or {})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return resp.read().decode('utf-8')
+        except urllib.error.HTTPError as e:
+            last_err = e
+            if e.code == 429:
+                retry_after = e.headers.get('Retry-After', '')
+                wait = int(retry_after) if retry_after.isdigit() else 30
+                logger.warning('429 限流，等待 %ds 后重试', wait)
+                time.sleep(wait)
+                continue
+            if attempt < retries - 1:
+                wait = 3 * (attempt + 1)
+                logger.warning('请求失败 (第%d次)，%ds后重试: %s', attempt + 1, wait, e)
+                time.sleep(wait)
         except Exception as e:
             last_err = e
             if attempt < retries - 1:
-                wait = 2 ** attempt
+                wait = 3 * (attempt + 1)
                 logger.warning('请求失败 (第%d次)，%ds后重试: %s', attempt + 1, wait, e)
                 time.sleep(wait)
     logger.error('请求最终失败 (%d次): %s', retries, last_err)
@@ -200,30 +212,28 @@ NEWS_FEEDS = [
 ]
 
 ARXIV_SEARCH_QUERIES = [
-    ('motor_core',
-     '(abs:"FOC" OR abs:"SMO" OR abs:"PMSM" OR abs:"BLDC" OR '
-     'abs:"field-oriented control" OR abs:"sliding mode observer" OR '
-     'abs:"sensorless control" OR abs:"brushless DC" OR '
-     'abs:"permanent magnet synchronous" OR abs:"permanent-magnet synchronous") '
-     'AND (abs:"motor" OR abs:"PMSM" OR abs:"BLDC" OR abs:"induction motor" OR '
-     'abs:"synchronous motor" OR abs:"stator" OR abs:"rotor")'),
-    ('motor_broad',
-     '(abs:"motor control" OR abs:"motor drive" OR abs:"motor drives" OR '
-     'abs:"PWM inverter" OR abs:"SVPWM" OR abs:"space vector modulation" OR '
-     'abs:"model predictive control" OR abs:"MTPA" OR '
-     'abs:"high frequency injection" OR abs:"torque ripple" OR '
-     'abs:"rotor position" OR abs:"speed control" OR abs:"speed regulation" OR '
-     'abs:"vector control" OR abs:"field weakening") '
-     'AND (abs:"motor" OR abs:"inverter" OR abs:"PMSM" OR abs:"BLDC")'),
-    ('ai_control',
-     '(abs:"neural network" OR abs:"deep learning" OR abs:"reinforcement learning" OR '
-     'abs:"LSTM" OR abs:"fuzzy" OR abs:"machine learning") '
-     'AND (abs:"motor" OR abs:"PMSM" OR abs:"BLDC" OR abs:"inverter")'),
-    ('observer',
-     '(abs:"sliding mode" OR abs:"disturbance observer" OR '
-     'abs:"extended state observer" OR abs:"backstepping" OR '
-     'abs:"adaptive observer" OR abs:"Kalman filter" OR abs:"Luenberger") '
-     'AND (abs:"motor" OR abs:"PMSM" OR abs:"BLDC" OR abs:"induction")'),
+    ('foc_core',
+     '(abs:"FOC" OR abs:"field-oriented control" OR abs:"field oriented control" OR '
+     'abs:"current loop" OR abs:"current control" OR '
+     'abs:"PI controller" OR abs:"anti-windup" OR '
+     'abs:"PMSM inductance" OR abs:"inductance saturation" OR '
+     'abs:"encoder alignment" OR abs:"encoder calibration" OR '
+     'abs:"SiC inverter" OR abs:"silicon carbide" OR '
+     'abs:"MTPA" OR abs:"field weakening" OR '
+     'abs:"SVPWM" OR abs:"space vector modulation" OR '
+     'abs:"torque ripple" OR abs:"harmonic") '
+     'AND (abs:"motor" OR abs:"PMSM" OR abs:"BLDC" OR abs:"inverter" OR '
+     'abs:"permanent magnet" OR abs:"synchronous")'),
+    ('observer_math',
+     '(abs:"sliding mode observer" OR abs:"SMO" OR '
+     'abs:"sensorless control" OR abs:"sensorless drive" OR '
+     'abs:"Lyapunov" OR abs:"stability analysis" OR '
+     'abs:"fault diagnosis" OR abs:"fault detection" OR '
+     'abs:"impedance control" OR abs:"robot joint" OR '
+     'abs:"extended state observer" OR abs:"Kalman filter" OR '
+     'abs:"disturbance observer" OR abs:"adaptive observer") '
+     'AND (abs:"motor" OR abs:"PMSM" OR abs:"BLDC" OR abs:"inverter" OR '
+     'abs:"permanent magnet" OR abs:"drive")'),
 ]
 
 # ============== 缓存 ==============
@@ -391,12 +401,15 @@ def fetch_all_arxiv():
     all_papers, seen_ids = [], set()
     cutoff_date = datetime.utcnow() - timedelta(days=cfg['cutoff_days'])
 
-    for query_name, query in ARXIV_SEARCH_QUERIES:
+    for i, (query_name, query) in enumerate(ARXIV_SEARCH_QUERIES):
         papers = fetch_arxiv_by_search(query_name, query, max_results=cfg['max_results_per_query'])
         for p in papers:
             if p['arxiv_id'] not in seen_ids and p['published'].replace(tzinfo=None) >= cutoff_date:
                 seen_ids.add(p['arxiv_id'])
                 all_papers.append(p)
+        # arXiv 限流：每次查询间隔 5 秒
+        if i < len(ARXIV_SEARCH_QUERIES) - 1:
+            time.sleep(5)
     logger.info('时间过滤后（近 %d 天）: %d 篇', cfg['cutoff_days'], len(all_papers))
     return all_papers
 
@@ -430,9 +443,20 @@ def smart_filter(papers):
 
 
 def filter_news_keywords(news_list):
+    """关键词初筛：匹配 AI 关键词 + 排除营销类"""
+    exclude_kw = [
+        '新品发布', '正式发布', '重磅发布', '全球首发', '首发上市',
+        '开售', '预售', '上市', '上市售价', '价格公布',
+        '评测', '体验', '上手', '开箱', '导购', '推荐购买',
+        '销量', '市场份额', '出货量', '出货',
+        '融资', '估值', 'IPO', '上市',
+    ]
     matched = []
     for n in news_list:
         text = (n['title'] + ' ' + n['summary']).lower()
+        # 排除营销类
+        if any(kw in n['title'] for kw in exclude_kw):
+            continue
         if any(kw.lower() in text for kw in CFG['ai_keywords']):
             matched.append(n)
     return matched
@@ -466,38 +490,46 @@ def call_deepseek(prompt, max_tokens=2000):
 
 
 # ============== 论文分析 ==============
-PAPER_ANALYSIS_PROMPT = """你是电机控制领域研究生导师。分析论文并输出JSON。
+PAPER_ANALYSIS_PROMPT = """你是电机控制领域研究生导师。请对以下论文进行深度分析。
 
-论文：{title}
+**重要：全部用中文回答，不要输出任何英文。**
+
+论文英文标题：{title}
 作者：{authors}
 机构：{affiliations}
 来源：{journal_ref}
 分类：{category}
-日期：{published}
+发表日期：{published}
 
-摘要：
+完整摘要（请仔细阅读）：
 {summary}
 
-输出JSON（严格按格式）：
+请严格按以下 JSON 格式输出（全部用中文）：
 {{
+  "title_zh": "中文标题（准确翻译，20字内）",
   "score": 0-10,
-  "pain_point": "一句话痛点（解决什么毛病）",
-  "method": "核心方法（写思路不写公式）",
-  "result": "关键实验数字（无则写'需阅读全文')",
-  "benchmark": "对比对象（无则写'未提及')",
-  "limitation": "局限性（无则写'未提及')",
-  "reproducibility": "复现成本（硬件/代码）",
-  "action": "行动建议（下载全文/快速浏览/可跳过）",
-  "title_zh": "中文标题（20字内）",
-  "summary_zh": "中文摘要（100字，白话）",
-  "need_full_text": true/false
+  "pain_point": "一句话痛点：这篇论文要解决电机控制领域的什么具体毛病？",
+  "method": "核心方法：用白话描述技术路线（不用公式），说清楚创新点在哪里",
+  "result": "关键实验数字：转矩脉动降低了多少？效率提升了几点？响应快了多少？如果摘要里没写数字就写'需阅读全文'",
+  "benchmark": "对比对象：跟谁比的？传统PI？滑模？其他方法？如果没写就写'需阅读全文'",
+  "limitation": "局限性：这个方法有什么缺点？成本高？算力要求大？只能用于特定电机？",
+  "reproducibility": "复现成本：需要什么硬件？代码是否开源？大概需要多久复现？",
+  "action": "行动建议：强烈建议精读 / 建议快速浏览 / 可跳过",
+  "summary_zh": "中文摘要（150字，用白话讲清楚这篇论文做了什么、效果如何）",
+  "need_full_text": true或false
 }}
 
 评分标准：
-- 8-10：直接研究FOC/SMO/PMSM控制
-- 6-7：间接相关（通用控制理论应用到电机）
-- 4-5：边缘相关
-- 0-3：不相关"""
+- 8-10分：直接研究FOC/SMO/PMSM/BLDC控制、无传感器、电机驱动拓扑
+- 6-7分：间接相关（通用控制理论应用到电机、嵌入式AI推理加速）
+- 4-5分：边缘相关
+- 0-3分：不相关
+
+注意：
+1. 如果摘要中没有明确的实验数字，result字段必须写"需阅读全文"
+2. 如果摘要中没有对比实验，benchmark字段必须写"需阅读全文"
+3. limitation字段必须给出至少一个具体的局限性，不能写"未提及"
+4. 所有字段必须用中文，绝对不能输出英文"""
 
 
 def analyze_paper(paper):
@@ -518,10 +550,10 @@ def analyze_paper(paper):
         affiliations=affs_str, journal_ref=journal_str,
         category=paper['category'],
         published=paper['published'].strftime('%Y-%m-%d'),
-        summary=paper['summary'][:1200]
+        summary=paper['summary'][:1500]
     )
 
-    result = call_deepseek(prompt, max_tokens=600)
+    result = call_deepseek(prompt, max_tokens=800)
     try:
         match = re.search(r'\{[\s\S]+\}', result)
         if match:
@@ -542,29 +574,40 @@ def analyze_paper(paper):
 
 # ============== 批量处理 ==============
 def batch_analyze_papers(papers, batch_size=5):
+    """批量粗筛: 只评分+一句话理由, 不生成摘要(省 token, 为单篇精读留空间)"""
     results = []
     for i in range(0, len(papers), batch_size):
         batch = papers[i:i + batch_size]
-        logger.info('  批次 %d: 分析 %d 篇...', i // batch_size + 1, len(batch))
+        logger.info('  批次 %d: 粗筛 %d 篇...', i // batch_size + 1, len(batch))
 
         papers_info = []
         for j, p in enumerate(batch, 1):
             authors_str = ', '.join(p['authors'][:2])
             if len(p['authors']) > 2:
                 authors_str += f' 等{len(p["authors"])}人'
-            papers_info.append(f"论文{j}：\n标题：{p['title']}\n作者：{authors_str}\n摘要：{p['summary'][:300]}")
+            # 摘要截取 800 字（足够判断相关性）
+            papers_info.append(
+                f"论文{j}：\n标题：{p['title']}\n作者：{authors_str}\n摘要：{p['summary'][:800]}"
+            )
 
-        batch_prompt = f"""你是电机控制领域导师。分析以下{len(batch)}篇论文，为每篇输出JSON。
+        batch_prompt = f"""你是电机控制领域导师。为以下{len(batch)}篇论文打分。
 
 {chr(10).join(papers_info)}
 
-为每篇论文输出JSON数组（严格格式）：
+严格按以下 JSON 数组格式输出，不要输出其他内容：
 [
-  {{"id":1,"score":0-10,"pain_point":"一句话","method":"核心方法","result":"关键数字","action":"行动建议"}},
+  {{"id":1,"score":0-10,"reason_zh":"一句话中文理由"}},
   ...
-]"""
+]
 
-        result = call_deepseek(batch_prompt, max_tokens=800)
+评分标准（全部用中文回答）：
+- 8-10分：直接研究FOC/SMO/PMSM/BLDC控制、无传感器、电机驱动
+- 6-7分：间接相关（通用控制理论应用到电机、嵌入式AI推理）
+- 4-5分：边缘相关
+- 0-3分：不相关（纯机器人、纯深度学习应用、时间序列预测等）
+- 如果文章主体不是技术内容（如产品营销、市场分析），直接给0分"""
+
+        result = call_deepseek(batch_prompt, max_tokens=600)
         try:
             match = re.search(r'\[[\s\S]+\]', result)
             if match:
@@ -573,9 +616,6 @@ def batch_analyze_papers(papers, batch_size=5):
                     if j < len(batch_results):
                         r = batch_results[j]
                         r['paper'] = p
-                        r['title_zh'] = p['title'][:20]
-                        r['summary_zh'] = p['summary'][:100]
-                        r['need_full_text'] = r.get('score', 0) >= 6.0
                         results.append(r)
                     else:
                         results.append(_fallback_result(p))
@@ -591,10 +631,8 @@ def batch_analyze_papers(papers, batch_size=5):
 
 def _fallback_result(p):
     return {
-        'score': 5.0, 'pain_point': '分析失败', 'method': '需阅读全文',
-        'result': '需阅读全文', 'action': '建议快速浏览',
-        'paper': p, 'title_zh': p['title'][:20],
-        'summary_zh': p['summary'][:100], 'need_full_text': True,
+        'score': 5.0, 'reason_zh': '分析失败',
+        'paper': p,
     }
 
 
@@ -619,18 +657,30 @@ def batch_evaluate_news(news_list):
         if not non_funding_batch:
             continue
 
-        news_info = [f"新闻{j}：标题：{n['title']}\n摘要：{n['summary'][:200]}" for j, n in enumerate(non_funding_batch, 1)]
-        batch_prompt = f"""评估以下{len(non_funding_batch)}条新闻对电机控制研究生的价值。
+        news_info = [f"新闻{j}：标题：{n['title']}\n摘要：{n['summary'][:300]}" for j, n in enumerate(non_funding_batch, 1)]
+        batch_prompt = f"""你是电机控制领域的严格编辑。评估以下{len(non_funding_batch)}条新闻的价值。
 
 {chr(10).join(news_info)}
 
-为每条输出JSON数组：
+严格按以下 JSON 数组输出：
 [
-  {{"id":1,"score":0-10,"reason":"一句话理由"}},
+  {{"id":1,"score":0-10,"reason_zh":"一句话中文理由"}},
   ...
 ]
 
-评分标准：与电机控制/机器人/工业自动化的相关性和实用价值。融资类新闻0分。"""
+评分标准（全部用中文回答）：
+- 8-10分：直接报道电机控制/FOC/SMO/无传感器/电机驱动的技术突破
+- 6-7分：嵌入式AI推理加速、边缘计算在电机控制中的应用、SiC/GaN功率器件
+- 5分及以下：不推
+
+**一票否决（直接0分）：**
+1. 文章主体是产品营销/新品发布/市场分析（哪怕提到了AI/电机关键词）
+2. 只是提了一嘴AI/电机，但核心内容是其他领域
+3. 融资/上市/估值类新闻
+4. 电动车产品评测/导购（不是技术内容）
+5. 标题含"发布""上市""开售""预售""评测""体验"等营销词汇
+
+判断方法：看文章标题和摘要的核心主题是什么，而不是有没有出现关键词"""
 
         result = call_deepseek(batch_prompt, max_tokens=400)
         try:
@@ -640,7 +690,7 @@ def batch_evaluate_news(news_list):
                 for j, n in enumerate(non_funding_batch):
                     if j < len(batch_results):
                         r = batch_results[j]
-                        results.append((r.get('score', 0), n, r.get('reason', '')))
+                        results.append((r.get('score', 0), n, r.get('reason_zh', '')))
                     else:
                         results.append((0, n, '分析失败'))
         except Exception as e:
@@ -738,16 +788,29 @@ def batch_evaluate_github(repos):
     results = []
     for i in range(0, len(repos), 5):
         batch = repos[i:i + 5]
-        repos_info = [f"仓库{j}：{r['title']}\n描述：{r['summary'][:150]}" for j, r in enumerate(batch, 1)]
-        batch_prompt = f"""评估以下{len(batch)}个GitHub仓库对电机控制研究生的价值。
+        repos_info = [f"仓库{j}：{r['title']}\n描述：{r['summary'][:200]}" for j, r in enumerate(batch, 1)]
+        batch_prompt = f"""评估以下{len(batch)}个GitHub仓库。核心问题：这个项目是否代表了新的工作方式或能力？
 
 {chr(10).join(repos_info)}
 
-为每个输出JSON数组：
+严格按以下 JSON 数组输出：
 [
-  {{"id":1,"score":0-10,"reason":"一句话理由"}},
+  {{"id":1,"score":0-10,"reason_zh":"一句话中文理由"}},
   ...
-]"""
+]
+
+评分标准（全部用中文回答）：
+- 8-10分：颠覆性项目，代表新范式（如 ai agent 框架、本地大模型运行、AI 编程工具）
+- 6-7分：有潜力的新工具，可能改变部分工作方式
+- 5分及以下：不推
+
+**一票否决（直接0分）：**
+1. 纯 UI 框架/CSS 框架/设计系统
+2. 纯模板/脚手架/admin 后台
+3. 纯 CLI 工具/开发辅助（除非跟 AI 深度结合）
+4. 只是已有工具的替代品，没有新意
+
+关键判断: 不是有用, 而是是不是新东西, 会不会改变大家的工作方式"""
 
         result = call_deepseek(batch_prompt, max_tokens=400)
         try:
@@ -757,7 +820,7 @@ def batch_evaluate_github(repos):
                 for j, r in enumerate(batch):
                     if j < len(batch_results):
                         res = batch_results[j]
-                        results.append((res.get('score', 0), r, res.get('reason', '')))
+                        results.append((res.get('score', 0), r, res.get('reason_zh', '')))
                     else:
                         results.append((0, r, '分析失败'))
         except Exception as e:
@@ -802,7 +865,9 @@ def fetch_news():
     for source_name, url in NEWS_FEEDS:
         logger.info('抓取 %s...', source_name)
         try:
-            feed = feedparser.parse(url)
+            # 先用带超时的 HTTP 请求获取内容，再解析
+            raw = _http_request(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=20, retries=2)
+            feed = feedparser.parse(raw)
             for entry in feed.entries[:max_per]:
                 all_news.append({
                     'source': source_name,
@@ -811,7 +876,7 @@ def fetch_news():
                     'link': entry.get('link', ''),
                 })
         except Exception as e:
-            logger.error('抓 %s 失败: %s', source_name, e)
+            logger.warning('抓 %s 失败（跳过）: %s', source_name, e)
     logger.info('共 %d 条', len(all_news))
     return all_news
 
@@ -830,11 +895,11 @@ def format_paper_section(paper_data, index, total):
     score = paper_data.get('score', 0)
 
     if score >= 8:
-        read_emoji, read_level = '!!', '强烈建议精读'
+        read_level = '强烈建议精读'
     elif score >= 6:
-        read_emoji, read_level = '!', '建议阅读'
+        read_level = '建议阅读'
     else:
-        read_emoji, read_level = '-', '可选阅读'
+        read_level = '可选阅读'
 
     source_parts = []
     if paper.get('journal_ref'):
@@ -843,32 +908,37 @@ def format_paper_section(paper_data, index, total):
         source_parts.append(paper['comment'][:50])
     source_str = ' | '.join(source_parts) if source_parts else 'arXiv预印本'
 
+    title_zh = paper_data.get('title_zh', '')
+    title_en = paper.get('title', '')
+    title_line = f'{title_zh}（{title_en}）' if title_zh else title_en
+
     section = f"""** [{index}/{total}] [{score:.1f}/10] {read_level}**
 
 **来源**: {source_str}
-**分类**: {paper.get('primary_category', paper.get('category', ''))}
-**标题**: {paper.get('title', '')[:80]}
+**标题**: {title_line}
 
 **[一句话痛点]**
 {paper_data.get('pain_point', '需阅读全文')}
 
-**[核心招数]**
+**[核心方法]**
 {paper_data.get('method', '需阅读全文')}
 
-**[硬核数字]**
+**[关键数字]**
 {paper_data.get('result', '需阅读全文')}
 
 **[对比对象]**
-{paper_data.get('benchmark', '未提及')}
+{paper_data.get('benchmark', '需阅读全文')}
 
 **[局限性]**
-{paper_data.get('limitation', '未提及')}
+{paper_data.get('limitation', '需阅读全文')}
 
 **[复现成本]**
-{paper_data.get('reproducibility', '需阅读全文确认')}
+{paper_data.get('reproducibility', '需阅读全文')}
 
-**[行动点]**
+**[行动建议]**
 {paper_data.get('action', '建议快速浏览')}
+
+{paper_data.get('summary_zh', '')}
 
 [arXiv: {paper.get('arxiv_id', '')}]({paper.get('link', '')})
 
@@ -889,12 +959,12 @@ def main():
     db.cleanup(keep_days=30)
 
     # ====== 1. 抓 arXiv 论文 ======
-    logger.info('[1/7] 抓取 arXiv 论文...')
+    logger.info('[1/6] 抓取 arXiv 论文...')
     all_papers = fetch_all_arxiv()
     logger.info('总计 %d 篇候选', len(all_papers))
 
     # ====== 2. 分层筛选 ======
-    logger.info('[2/7] 分层筛选...')
+    logger.info('[2/6] 分层筛选...')
     high_priority, medium_priority = smart_filter(all_papers)
     cfg_paper = CFG['paper']
     candidate_papers = high_priority[:8] + medium_priority[:7]
@@ -907,50 +977,64 @@ def main():
     logger.info('去重后候选: %d 篇', len(candidate_papers))
 
     # ====== 3. 批量分析 ======
-    logger.info('[3/7] 批量分析论文...')
+    logger.info('[3/6] 批量分析论文...')
     analyzed_papers = batch_analyze_papers(candidate_papers, batch_size=cfg_paper['batch_size'])
     analyzed_papers.sort(key=lambda x: -x.get('score', 0))
 
-    # 选择最终论文
-    ai_motor_paper, pure_motor_paper = None, None
+    # 按搜索方向选论文：FOC核心 1 篇 + 观测器数学 1 篇
+    foc_paper, observer_paper = None, None
     for p_data in analyzed_papers:
         p = p_data.get('paper', {})
         score = p_data.get('score', 0)
-        if not ai_motor_paper and p.get('category') == 'cs.AI' and score >= cfg_paper['high_priority_min_score']:
-            ai_motor_paper = p_data
-        elif not pure_motor_paper and p.get('category') in ('cs.SY', 'cs.RO') and score >= cfg_paper['high_priority_min_score']:
-            pure_motor_paper = p_data
+        direction = p.get('search_source', '')
+        if score < cfg_paper['high_priority_min_score']:
+            continue
+        if not foc_paper and direction == 'foc_core':
+            foc_paper = p_data
+        elif not observer_paper and direction == 'observer_math':
+            observer_paper = p_data
 
-    if not ai_motor_paper and analyzed_papers:
-        ai_motor_paper = analyzed_papers[0]
-    if not pure_motor_paper and len(analyzed_papers) >= 2:
-        pure_motor_paper = analyzed_papers[1]
+    # 兜底：如果某个方向没找到高分论文，取该方向最高分
+    if not foc_paper:
+        for p_data in analyzed_papers:
+            if p_data.get('paper', {}).get('search_source') == 'foc_core':
+                foc_paper = p_data
+                break
+    if not observer_paper:
+        for p_data in analyzed_papers:
+            if p_data.get('paper', {}).get('search_source') == 'observer_math':
+                observer_paper = p_data
+                break
 
-    logger.info('选中: AI+电机=%s, 纯电机=%s', ai_motor_paper is not None, pure_motor_paper is not None)
+    logger.info('选中: FOC核心=%s, 观测器数学=%s', foc_paper is not None, observer_paper is not None)
 
-    # ====== 4. 生成论文简报 ======
-    logger.info('[4/7] 生成论文简报...')
+    # ====== 4. 单篇精读 ======
+    logger.info('[4/6] 单篇精读（Top 2）...')
     final_content = f'**每日 AI 简报** | {today}\n\n'
 
-    if ai_motor_paper:
-        logger.info('  AI+电机: %s', ai_motor_paper.get('paper', {}).get('title', '')[:50])
-        final_content += '---\n'
-        final_content += '**[论文 1/2] AI + 电机控制**\n\n'
-        final_content += format_paper_section(ai_motor_paper, 1, 2)
-        # 记录已推送
-        p = ai_motor_paper.get('paper', {})
-        db.mark_pushed(today, 'paper', p.get('arxiv_id', ''), p.get('title', ''), ai_motor_paper.get('score', 0))
+    # 对选中的论文做单篇深度分析
+    deep_analyzed = []
+    for label, paper_data in [('FOC核心', foc_paper), ('观测器/数学', observer_paper)]:
+        if not paper_data:
+            continue
+        p = paper_data.get('paper', {})
+        logger.info('  精读 [%s]: %s', label, p.get('title', '')[:50])
+        deep_result = analyze_paper(p)
+        deep_result['paper'] = p
+        deep_result['direction'] = label
+        deep_result['coarse_score'] = paper_data.get('score', 0)
+        deep_analyzed.append(deep_result)
 
-    if pure_motor_paper and pure_motor_paper != ai_motor_paper:
-        logger.info('  纯电机: %s', pure_motor_paper.get('paper', {}).get('title', '')[:50])
+    # 格式化输出
+    for i, paper_data in enumerate(deep_analyzed, 1):
         final_content += '---\n'
-        final_content += '**[论文 2/2] 电机控制**\n\n'
-        final_content += format_paper_section(pure_motor_paper, 2, 2)
-        p = pure_motor_paper.get('paper', {})
-        db.mark_pushed(today, 'paper', p.get('arxiv_id', ''), p.get('title', ''), pure_motor_paper.get('score', 0))
+        final_content += f'**[论文 {i}/{len(deep_analyzed)}] {paper_data["direction"]}**\n\n'
+        final_content += format_paper_section(paper_data, i, len(deep_analyzed))
+        p = paper_data.get('paper', {})
+        db.mark_pushed(today, 'paper', p.get('arxiv_id', ''), p.get('title', ''), paper_data.get('score', 0))
 
     # ====== 5. AI 新闻 ======
-    logger.info('[5/7] 抓取 AI 新闻...')
+    logger.info('[5/6] 抓取 AI 新闻...')
     all_news = fetch_news()
     ai_news = filter_news_keywords(all_news)
     logger.info('AI 相关: %d 条', len(ai_news))
@@ -960,11 +1044,6 @@ def main():
     min_score = CFG['news']['min_score']
     final_count = CFG['news']['final_count']
     top_news = [(s, n, r) for s, n, r in news_scores if s >= min_score][:final_count]
-
-    if not top_news:
-        logger.warning('没有高分新闻，兜底取前 %d 条', final_count)
-        for n in ai_news[:final_count]:
-            top_news.append((5.0, n, '兜底推荐'))
 
     if top_news:
         final_content += '---\n'
@@ -986,7 +1065,7 @@ def main():
             db.mark_pushed(today, 'news', news_key, n['title'], score)
 
     # ====== 6. GitHub Trending ======
-    logger.info('[6/7] 抓取 GitHub Trending...')
+    logger.info('[6/6] 抓取 GitHub Trending...')
     github_trending = fetch_github_trending()
 
     if github_trending:
@@ -1016,7 +1095,7 @@ def main():
                 db.mark_pushed(today, 'github', repo.get('repo_path', ''), repo.get('title', ''), score)
 
     # ====== 7. 推送 ======
-    logger.info('[7/7] 发送到微信...')
+    logger.info('[推送] 发送到微信...')
     if not SERVERCHAN_SENDKEY:
         logger.warning('SERVERCHAN_SENDKEY 未设置，跳过推送。简报已生成但未发送。')
         # 保存到本地文件
