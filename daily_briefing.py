@@ -225,15 +225,12 @@ ARXIV_SEARCH_QUERIES = [
      'AND (abs:"motor" OR abs:"PMSM" OR abs:"BLDC" OR abs:"inverter" OR '
      'abs:"permanent magnet" OR abs:"synchronous")'),
     ('observer_math',
-     '(abs:"sliding mode observer" OR abs:"SMO" OR '
-     'abs:"sensorless control" OR abs:"sensorless drive" OR '
-     'abs:"Lyapunov" OR abs:"stability analysis" OR '
-     'abs:"fault diagnosis" OR abs:"fault detection" OR '
-     'abs:"impedance control" OR abs:"robot joint" OR '
-     'abs:"extended state observer" OR abs:"Kalman filter" OR '
+     '(abs:"sliding mode observer" OR abs:"sensorless control" OR '
+     'abs:"sensorless drive" OR abs:"impedance control" OR '
+     'abs:"robot joint" OR abs:"extended state observer" OR '
      'abs:"disturbance observer" OR abs:"adaptive observer") '
      'AND (abs:"motor" OR abs:"PMSM" OR abs:"BLDC" OR abs:"inverter" OR '
-     'abs:"permanent magnet" OR abs:"drive")'),
+     'abs:"permanent magnet" OR abs:"synchronous")'),
 ]
 
 # ============== 缓存 ==============
@@ -367,6 +364,7 @@ def fetch_arxiv_by_search(query_name, query, max_results=30):
             link_el = entry.find('atom:id', ns)
             link = link_el.text.strip() if link_el is not None else ''
             arxiv_id = link.split('/')[-1] if link else ''
+            arxiv_id = re.sub(r'v\d+$', '', arxiv_id)  # 剥离版本号，保证去重 key 稳定
 
             published = entry.find('atom:published', ns).text.strip()
             pub_date = datetime.strptime(published, '%Y-%m-%dT%H:%M:%SZ')
@@ -1010,7 +1008,8 @@ def main():
 
     # ====== 4. 单篇精读 ======
     logger.info('[4/6] 单篇精读（Top 2）...')
-    final_content = f'**每日 AI 简报** | {today}\n\n'
+    push_time = datetime.now().strftime('%Y-%m-%d %H:%M')
+    final_content = f'**每日 AI 简报** | {today}\n推送时间: {push_time}\n\n'
 
     # 对选中的论文做单篇深度分析
     deep_analyzed = []
@@ -1038,6 +1037,13 @@ def main():
     all_news = fetch_news()
     ai_news = filter_news_keywords(all_news)
     logger.info('AI 相关: %d 条', len(ai_news))
+
+    # 去重：过滤已推送的新闻
+    ai_news = [
+        n for n in ai_news
+        if not db.is_pushed('news', hashlib.md5(n['title'].encode()).hexdigest()[:12], within_days=3)
+    ]
+    logger.info('去重后新闻候选: %d 条', len(ai_news))
 
     news_scores = batch_evaluate_news(ai_news[:CFG['news']['eval_max_news']])
     news_scores.sort(key=lambda x: -x[0])
@@ -1067,6 +1073,13 @@ def main():
     # ====== 6. GitHub Trending ======
     logger.info('[6/6] 抓取 GitHub Trending...')
     github_trending = fetch_github_trending()
+
+    # 去重：过滤已推送的 GitHub 项目
+    github_trending = [
+        r for r in github_trending
+        if not db.is_pushed('github', r.get('repo_path', ''), within_days=3)
+    ]
+    logger.info('去重后 GitHub 候选: %d 个', len(github_trending))
 
     if github_trending:
         logger.info('  批量评估 GitHub 仓库...')
